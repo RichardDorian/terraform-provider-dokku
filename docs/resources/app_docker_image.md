@@ -22,8 +22,10 @@ Deploys a Dokku app from a container registry image (`dokku git:from-image`), in
 
 ### Optional
 
-- `registry_password` (String, Sensitive) Password or access token used to authenticate to the private registry hosting `image`. Required together with registry_username.
-- `registry_username` (String) Username used to authenticate to the private registry hosting `image` before deploying (`dokku registry:login`). The registry host is inferred from `image`. Required together with registry_password.
+> **NOTE**: [Write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) are supported in Terraform 1.11 and later.
+
+- `registry_password` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Password or access token used to authenticate to the private registry hosting `image`. Required together with registry_username. Write-only: not persisted in plan or state, so a credential change alone will not trigger a redeploy.
+- `registry_username` (String, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Username used to authenticate to the private registry hosting `image` before deploying (`dokku registry:login`). The registry host is inferred from `image`. Required together with registry_password. Write-only: not persisted in plan or state, so a credential change alone will not trigger a redeploy.
 
 ### Read-Only
 

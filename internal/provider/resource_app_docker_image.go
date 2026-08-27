@@ -62,12 +62,14 @@ func (r *AppDockerImageResource) Schema(ctx context.Context, req resource.Schema
 			},
 			"registry_username": schema.StringAttribute{
 				Optional:    true,
-				Description: "Username used to authenticate to the private registry hosting `image` before deploying (`dokku registry:login`). The registry host is inferred from `image`. Required together with registry_password.",
+				WriteOnly:   true,
+				Description: "Username used to authenticate to the private registry hosting `image` before deploying (`dokku registry:login`). The registry host is inferred from `image`. Required together with registry_password. Write-only: not persisted in plan or state, so a credential change alone will not trigger a redeploy.",
 			},
 			"registry_password": schema.StringAttribute{
 				Optional:    true,
 				Sensitive:   true,
-				Description: "Password or access token used to authenticate to the private registry hosting `image`. Required together with registry_username.",
+				WriteOnly:   true,
+				Description: "Password or access token used to authenticate to the private registry hosting `image`. Required together with registry_username. Write-only: not persisted in plan or state, so a credential change alone will not trigger a redeploy.",
 			},
 			"deployed_sha": schema.StringAttribute{
 				Computed:    true,
@@ -112,26 +114,32 @@ func registryHost(image string) string {
 	return "docker.io"
 }
 
-func (r *AppDockerImageResource) login(ctx context.Context, data *AppDockerImageResourceModel) error {
-	username := data.RegistryUsername.ValueString()
-	password := data.RegistryPassword.ValueString()
+// deploy logs in to the registry hosting image (if credentials were
+// supplied), deploys it, then logs back out so the credentials aren't left
+// behind in Dokku's registry auth config. username and password come from
+// the request config rather than the resource model: they're write-only
+// attributes, so Terraform never populates them on the plan or state values
+// the model is otherwise read from.
+func (r *AppDockerImageResource) deploy(ctx context.Context, data *AppDockerImageResourceModel, username, password string) (err error) {
 	if username == "" && password == "" {
-		return nil
+		_, err = r.client.RunChecked(ctx, "git:from-image", data.App.ValueString(), data.Image.ValueString())
+		return err
 	}
 	if username == "" || password == "" {
 		return errors.New("registry_username and registry_password must be set together")
 	}
 
 	host := registryHost(data.Image.ValueString())
-	_, err := r.client.RunChecked(ctx, "registry:login", host, username, password)
-	return err
-}
-
-func (r *AppDockerImageResource) deploy(ctx context.Context, data *AppDockerImageResourceModel) error {
-	if err := r.login(ctx, data); err != nil {
+	if _, err = r.client.RunChecked(ctx, "registry:login", host, username, password); err != nil {
 		return err
 	}
-	_, err := r.client.RunChecked(ctx, "git:from-image", data.App.ValueString(), data.Image.ValueString())
+	defer func() {
+		if _, logoutErr := r.client.RunChecked(ctx, "registry:logout", host); logoutErr != nil {
+			err = errors.Join(err, logoutErr)
+		}
+	}()
+
+	_, err = r.client.RunChecked(ctx, "git:from-image", data.App.ValueString(), data.Image.ValueString())
 	return err
 }
 
@@ -152,7 +160,13 @@ func (r *AppDockerImageResource) Create(ctx context.Context, req resource.Create
 		return
 	}
 
-	if err := r.deploy(ctx, &data); err != nil {
+	var config AppDockerImageResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if err := r.deploy(ctx, &data, config.RegistryUsername.ValueString(), config.RegistryPassword.ValueString()); err != nil {
 		resp.Diagnostics.AddError("Error deploying app from image", err.Error())
 		return
 	}
@@ -186,7 +200,13 @@ func (r *AppDockerImageResource) Update(ctx context.Context, req resource.Update
 		return
 	}
 
-	if err := r.deploy(ctx, &plan); err != nil {
+	var config AppDockerImageResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if err := r.deploy(ctx, &plan, config.RegistryUsername.ValueString(), config.RegistryPassword.ValueString()); err != nil {
 		resp.Diagnostics.AddError("Error redeploying app from image", err.Error())
 		return
 	}
